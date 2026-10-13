@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dormitorio 3D · Simulación VR</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#111;font-family:system-ui,sans-serif;color:#fff}
+  canvas{display:block}
+  #ui{position:fixed;top:12px;left:12px;display:flex;gap:8px;flex-wrap:wrap;z-index:5}
+  button{background:rgba(20,20,30,.75);color:#fff;border:1px solid #ffffff44;border-radius:10px;padding:9px 14px;font-size:14px;cursor:pointer;backdrop-filter:blur(6px)}
+  button:hover{background:rgba(70,90,160,.85)}
+  #help{position:fixed;bottom:12px;left:12px;font-size:13px;background:rgba(20,20,30,.7);padding:8px 12px;border-radius:10px;max-width:90vw;z-index:5}
+  #cross{position:fixed;top:50%;left:50%;width:8px;height:8px;margin:-4px;border-radius:50%;background:#fff;opacity:.6;pointer-events:none;z-index:5}
+</style>
+</head>
+<body>
+<div id="ui">
+  <button id="bPlay">▶ Explorar</button>
+  <button id="bLamp">💡 Lámpara</button>
+  <button id="bDay">🌙 Día/Noche</button>
+  <button id="bCard">📱 Modo Cardboard</button>
+  <button id="bVR">🥽 Entrar a VR</button>
+</div>
+<div id="cross"></div>
+<div id="help">WASD / flechas: moverse · Ratón: mirar (clic en Explorar) · Clic en objetos: interactuar (lámpara, TV, ventana)</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+"use strict";
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.xr.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87b5e0);
+const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.05, 50);
+const rig = new THREE.Group();             // "rig" permite mover al usuario también en VR
+rig.position.set(0,0,2.2);
+rig.add(camera); scene.add(rig);
+camera.position.y = 1.6;
+
+const mat = (c,r=.9,m=0)=>new THREE.MeshStandardMaterial({color:c,roughness:r,metalness:m});
+function box(w,h,d,m,x,y,z,parent=scene){
+  const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);
+  o.position.set(x,y,z); o.castShadow=o.receiveShadow=true; parent.add(o); return o;
+}
+
+// ---- Habitación 5 x 3 x 4 m (x, y, z) ----
+const W=5,H=3,D=4;
+const floorM = (()=>{ // parquet procedural
+  const c=document.createElement('canvas'); c.width=c.height=256; const g=c.getContext('2d');
+  for(let i=0;i<8;i++){ g.fillStyle=`hsl(30,${40+Math.random()*10}%,${38+Math.random()*10}%)`; g.fillRect(0,i*32,256,31);
+    for(let j=0;j<3;j++){ g.fillStyle=`hsl(28,40%,${33+Math.random()*12}%)`; g.fillRect(((j*90+i*37)%256),i*32,86,31);} }
+  const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(2,2);
+  return new THREE.MeshStandardMaterial({map:t,roughness:.6});
+})();
+const wallM = mat(0xe9e2d4), wallAcc = mat(0x6d8fb3);
+const floor = box(W,.1,D,floorM,0,-.05,0);
+box(W,.1,D,mat(0xf5f5f5),0,H+.05,0);
+box(W,H,.1,wallAcc,0,H/2,-D/2-.05);          // pared del fondo (cabecera)
+box(.1,H,D,wallM,-W/2-.05,H/2,0);            // izquierda
+box(W,H,.1,wallM,0,H/2,D/2+.05);             // frontal trasera
+// pared derecha con ventana (4 piezas alrededor del hueco)
+const wx=W/2+.05, wy0=1,wy1=2.2,wz0=-.9,wz1=.9;
+box(.1,H,D/2+wz0,wallM,wx,H/2,-D/2+(D/2+wz0)/2);
+box(.1,H,D/2-wz1,wallM,wx,H/2,D/2-(D/2-wz1)/2);
+box(.1,wy0,wz1-wz0,wallM,wx,wy0/2,0);
+box(.1,H-wy1,wz1-wz0,wallM,wx,wy1+(H-wy1)/2,0);
+// zócalos
+[[0,.06,-D/2+.02,W,.12,.04],[-W/2+.02,.06,0,.04,.12,D],[0,.06,D/2-.02,W,.12,.04]].forEach(a=>box(a[3],a[4],a[5],mat(0xffffff),a[0],a[1],a[2]));
+
+// Cristal y marco de ventana
+const glass = new THREE.Mesh(new THREE.PlaneGeometry(1.8,1.2),new THREE.MeshStandardMaterial({color:0xbfe3ff,transparent:true,opacity:.25,roughness:.05}));
+glass.rotation.y=-Math.PI/2; glass.position.set(W/2,1.6,0); scene.add(glass);
+[[0,1.6+.6,.04,1.9],[0,1.6-.6,.04,1.9]].forEach(a=>box(.08,.06,a[3],mat(0xffffff),W/2,a[1],0));
+[-.9,0,.9].forEach(z=>box(.08,1.2,.05,mat(0xffffff),W/2,1.6,z));
+let curtainOpen=true;
+const curtain = box(.05,1.5,.5,mat(0xc86a6a),W/2-.15,1.6,-.95);
+curtain.scale.z=1;
+
+// ---- Cama ----
+const bed=new THREE.Group(); bed.position.set(0,0,-D/2+1.1); scene.add(bed);
+box(1.6,.3,2.1,mat(0x5a3a22),0,.25,0,bed);                  // base
+box(1.5,.22,2.0,mat(0xf0f0f0),0,.5,0,bed);                  // colchón
+box(1.56,.06,1.3,mat(0x3f6fb5),0,.63,.35,bed);              // edredón
+box(1.7,.9,.08,mat(0x5a3a22),0,.75,-1.05,bed);             // cabecero
+[-.4,.4].forEach(x=>box(.55,.12,.38,mat(0xffffff),x,.66,-.78,bed)); // almohadas
+
+// ---- Mesitas y lámpara ----
+box(.45,.5,.4,mat(0x7a5232),-1.2,.25,-D/2+.35);
+box(.45,.5,.4,mat(0x7a5232),1.2,.25,-D/2+.35);
+const lamp=new THREE.Group(); lamp.position.set(-1.2,.5,-D/2+.35); scene.add(lamp);
+box(.1,.03,.1,mat(0x222222),0,.015,0,lamp);
+box(.02,.25,.02,mat(0x222222),0,.15,0,lamp);
+const shade=new THREE.Mesh(new THREE.CylinderGeometry(.1,.17,.2,20,1,true),new THREE.MeshStandardMaterial({color:0xfff2c8,emissive:0xffc866,emissiveIntensity:1,side:THREE.DoubleSide}));
+shade.position.y=.35; lamp.add(shade);
+const lampLight=new THREE.PointLight(0xffc27a,1.2,6,2); lampLight.position.set(0,.35,0); lampLight.castShadow=true; lamp.add(lampLight);
+
+// ---- Escritorio + silla + monitor ----
+box(1.4,.05,.65,mat(0x8a6a48),-W/2+.5,.75,.9);
+[[-.65,-.28],[.65,-.28],[-.65,.28],[.65,.28]].forEach(p=>box(.05,.75,.05,mat(0x333333),-W/2+.5+p[0],.375,.9+p[1]));
+box(.5,.3,.03,mat(0x111111),-W/2+.35,1.0,.85).rotation.y=.35;
+box(.08,.2,.08,mat(0x222222),-W/2+.45,.85,.88);
+box(.5,.04,.5,mat(0x2a2a2a),-W/2+1.35,.5,.95);
+box(.5,.5,.05,mat(0x2a2a2a),-W/2+1.35,.8,1.2);
+box(.04,.5,.04,mat(0x555555),-W/2+1.35,.25,.95);
+
+// ---- Armario y estante ----
+box(1.2,2.3,.55,mat(0xb89870),1.4,1.15,D/2-.4);
+box(.01,2.2,.01,mat(0x000000),1.4,1.15,D/2-.12);
+const shelf=new THREE.Group(); scene.add(shelf);
+box(1.2,.04,.22,mat(0x5a3a22),0,1.9,-D/2+.12,shelf);
+[[ -.4,0xd04b4b],[-.25,0x4b8bd0],[-.1,0x58b868],[.05,0xd0b04b],[.2,0x9a4bd0]].forEach(b=>box(.1,.28,.16,mat(b[1]),b[0],2.06,-D/2+.12,shelf));
+
+// ---- TV interactivo en la pared izquierda (mirando al este) ----
+const tvC=document.createElement('canvas'); tvC.width=512; tvC.height=288; const tg=tvC.getContext('2d');
+const tvTex=new THREE.CanvasTexture(tvC);
+const tv=new THREE.Mesh(new THREE.PlaneGeometry(1.1,.62),new THREE.MeshBasicMaterial({map:tvTex}));
+tv.position.set(-W/2+.03,1.5,.0); tv.rotation.y=Math.PI/2; scene.add(tv);
+box(.04,.68,1.16,mat(0x050505),-W/2+.01,1.5,0);
+let tvOn=false;
+function drawTV(t){
+  if(!tvOn){tg.fillStyle='#050505';tg.fillRect(0,0,512,288);}
+  else{ const g=tg.createLinearGradient(0,0,512,288); g.addColorStop(0,`hsl(${(t*30)%360},70%,40%)`); g.addColorStop(1,`hsl(${(t*30+120)%360},70%,25%)`);
+    tg.fillStyle=g; tg.fillRect(0,0,512,288); tg.fillStyle='#fff'; tg.font='bold 44px sans-serif'; tg.textAlign='center'; tg.fillText('Dormitorio VR',256,150);
+    tg.font='24px sans-serif'; tg.fillText(new Date().toLocaleTimeString(),256,200);}
+  tvTex.needsUpdate=true;
+}
+
+// ---- Alfombra y póster ----
+const rug=new THREE.Mesh(new THREE.CircleGeometry(1.1,40),mat(0x7a4b8a)); rug.rotation.x=-Math.PI/2; rug.position.set(0,.01,.4); rug.receiveShadow=true; scene.add(rug);
+box(.9,.6,.02,mat(0xf4e7b0),0,1.9+.6,-D/2+.01);
+
+// ---- Iluminación ambiente ----
+const hemi=new THREE.HemisphereLight(0xcfe6ff,0x6b5a45,.6); scene.add(hemi);
+const sun=new THREE.DirectionalLight(0xfff1d0,1.1); sun.position.set(6,5,0); sun.target.position.set(0,1,0);
+sun.castShadow=true; sun.shadow.mapSize.set(1024,1024); scene.add(sun,sun.target);
+let night=false, lampOn=true;
+function applyState(){
+  scene.background.set(night?0x0a1030:0x87b5e0);
+  sun.intensity=night?.0:1.1; hemi.intensity=night?.12:.6;
+  lampLight.intensity=lampOn?1.2:0; shade.material.emissiveIntensity=lampOn?1:0;
+}
+applyState();
+
+// ---- Interacción (raycaster) ----
+const interactives=[{mesh:lamp,fn:()=>{lampOn=!lampOn;applyState();}},
+  {mesh:tv,fn:()=>{tvOn=!tvOn;}},
+  {mesh:curtain,fn:()=>{curtainOpen=!curtainOpen;}},
+  {mesh:glass,fn:()=>{curtainOpen=!curtainOpen;}}];
+const ray=new THREE.Raycaster();
+function pick(origin,dir){
+  ray.set(origin,dir);
+  const hit=ray.intersectObjects(interactives.map(i=>i.mesh),true)[0];
+  if(hit){ const it=interactives.find(i=>{let o=hit.object;while(o){if(o===i.mesh)return true;o=o.parent;}return false;}); it&&it.fn(); }
+}
+function pickFromCamera(){
+  const o=new THREE.Vector3(), d=new THREE.Vector3();
+  camera.getWorldPosition(o); camera.getWorldDirection(d); pick(o,d);
+}
+
+// ---- Controles de escritorio ----
+let yaw=0,pitch=0,locked=false; const keys={};
+document.addEventListener('keydown',e=>keys[e.code]=true);
+document.addEventListener('keyup',e=>keys[e.code]=false);
+bPlay.onclick=()=>renderer.domElement.requestPointerLock();
+document.addEventListener('pointerlockchange',()=>locked=document.pointerLockElement===renderer.domElement);
+document.addEventListener('mousemove',e=>{ if(!locked)return; yaw-=e.movementX*.002; pitch=Math.max(-1.4,Math.min(1.4,pitch-e.movementY*.002)); });
+renderer.domElement.addEventListener('click',e=>{
+  if(locked) pickFromCamera();
+  else{ const m=new THREE.Vector2(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1);
+    ray.setFromCamera(m,camera); const hit=ray.intersectObjects(interactives.map(i=>i.mesh),true)[0];
+    if(hit){const it=interactives.find(i=>{let o=hit.object;while(o){if(o===i.mesh)return true;o=o.parent;}return false;});it&&it.fn();} }
+});
+bLamp.onclick=()=>{lampOn=!lampOn;applyState();};
+bDay.onclick=()=>{night=!night;bDay.textContent=night?'☀️ Día/Noche':'🌙 Día/Noche';applyState();};
+
+// ---- Modo Cardboard (estéreo dividido + giroscopio) ----
+let cardboard=false; const stereo=new THREE.StereoCamera(); stereo.aspect=.5; const orient={a:0,b:0,g:0};
+bCard.onclick=async()=>{
+  cardboard=!cardboard; bCard.textContent=cardboard?'❌ Salir Cardboard':'📱 Modo Cardboard';
+  document.getElementById('ui').style.opacity=cardboard?.0:1; document.getElementById('help').style.display=cardboard?'none':'block';
+  if(cardboard){
+    if(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission){ try{await DeviceOrientationEvent.requestPermission();}catch(e){} }
+    addEventListener('deviceorientation',onOrient);
+    document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen().catch(()=>{});
+    setTimeout(()=>{document.getElementById('ui').style.opacity=1;document.getElementById('ui').style.transform='scale(.7)';document.getElementById('ui').style.transformOrigin='top left';},50);
+  }else removeEventListener('deviceorientation',onOrient);
+};
+function onOrient(e){ if(e.alpha==null)return; orient.a=e.alpha;orient.b=e.beta;orient.g=e.gamma; orient.on=true; }
+const _e=new THREE.Euler(),_q=new THREE.Quaternion(),_q1=new THREE.Quaternion(-Math.SQRT1_2,0,0,Math.SQRT1_2);
+function applyGyro(){
+  const d=THREE.MathUtils.degToRad;
+  _e.set(d(orient.b),d(orient.a),-d(orient.g),'YXZ'); _q.setFromEuler(_e).multiply(_q1);
+  _q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),-d(screen.orientation?screen.orientation.angle:0)));
+  camera.quaternion.copy(_q);
+}
+// En Cardboard, tocar la pantalla interactúa con el objeto al que se mira
+renderer.domElement.addEventListener('touchstart',()=>{ if(cardboard) pickFromCamera(); },{passive:true});
+
+// ---- WebXR real (Meta Quest, etc.) ----
+if(navigator.xr){ navigator.xr.isSessionSupported('immersive-vr').then(ok=>{ if(!ok) bVR.textContent='🥽 VR no disponible'; }); } else bVR.textContent='🥽 WebXR no soportado';
+bVR.onclick=async()=>{
+  if(!navigator.xr) return alert('Tu navegador no soporta WebXR. Prueba Chrome/Edge en un visor compatible (HTTPS o localhost) o usa el Modo Cardboard.');
+  if(renderer.xr.isPresenting) return renderer.xr.getSession().end();
+  try{
+    const s=await navigator.xr.requestSession('immersive-vr',{optionalFeatures:['local-floor','bounded-floor']});
+    renderer.xr.setReferenceSpaceType('local-floor'); await renderer.xr.setSession(s);
+    camera.position.y=0; // en VR la altura real la da el visor
+  }catch(err){ alert('No se pudo iniciar VR: '+err.message); }
+};
+renderer.xr.addEventListener('sessionend',()=>{camera.position.y=1.6;});
+// Controladores VR: gatillo = interactuar, joystick = mover
+const ctrls=[0,1].map(i=>{
+  const c=renderer.xr.getController(i); rig.add(c);
+  c.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3(0,0,-3)]),new THREE.LineBasicMaterial({color:0xffffff})));
+  c.addEventListener('selectstart',()=>{ const m=new THREE.Matrix4().extractRotation(c.matrixWorld);
+    const o=new THREE.Vector3().setFromMatrixPosition(c.matrixWorld), d=new THREE.Vector3(0,0,-1).applyMatrix4(m); pick(o,d); });
+  return c;
+});
+
+// ---- Bucle ----
+const clock=new THREE.Clock(); const dir=new THREE.Vector3();
+function limit(){ rig.position.x=Math.max(-W/2+.35,Math.min(W/2-.35,rig.position.x)); rig.position.z=Math.max(-D/2+.35,Math.min(D/2-.35,rig.position.z)); }
+function loop(){
+  const dt=clock.getDelta(), t=clock.elapsedTime, speed=2*dt;
+  if(!renderer.xr.isPresenting){
+    if(cardboard&&orient.on) applyGyro(); else { camera.rotation.set(pitch,0,0); rig.rotation.y=yaw; }
+    const f=(keys.KeyW||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0), s=(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyA||keys.ArrowLeft?1:0);
+    if(f||s){ dir.set(s,0,-f).normalize().applyAxisAngle(new THREE.Vector3(0,1,0),rig.rotation.y); rig.position.addScaledVector(dir,speed); limit(); }
+  }else{
+    const sess=renderer.xr.getSession();
+    sess.inputSources.forEach(src=>{ const a=src.gamepad&&src.gamepad.axes; if(a&&a.length>=4){
+      const x=a[2],y=a[3]; if(Math.abs(x)>.1||Math.abs(y)>.1){ camera.getWorldDirection(dir); dir.y=0; dir.normalize();
+        const right=new THREE.Vector3().crossVectors(dir,new THREE.Vector3(0,1,0));
+        rig.position.addScaledVector(dir,-y*speed).addScaledVector(right,x*speed); limit(); } } });
+  }
+  curtain.scale.z+=((curtainOpen?1:3.2)-curtain.scale.z)*.1;
+  curtain.position.z=-.95+(curtain.scale.z-1)*.25;
+  if(tvOn||t%1<dt) drawTV(t);
+  if(cardboard&&!renderer.xr.isPresenting){
+    renderer.setScissorTest(true); camera.updateMatrixWorld(); stereo.update(camera);
+    const w=innerWidth/2,h=innerHeight;
+    renderer.setScissor(0,0,w,h); renderer.setViewport(0,0,w,h); renderer.render(scene,stereo.cameraL);
+    renderer.setScissor(w,0,w,h); renderer.setViewport(w,0,w,h); renderer.render(scene,stereo.cameraR);
+    renderer.setScissorTest(false);
+  } else renderer.render(scene,camera);
+}
+renderer.setAnimationLoop(loop);
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+</script>
+</body>
+</html>
